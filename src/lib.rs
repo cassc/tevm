@@ -2,12 +2,14 @@ use crate::{fork_provider::ForkProvider, response::RevmResult};
 use revm::{
     handler::MainnetEvm,
     primitives::{Address, keccak256, B256},
+    context_interface::{ContextTr, ExecuteCommitEvm},
+    Evm,
 };
 use revm::state::{Account as DbAccount, AccountInfo};
 use revm::bytecode::Bytecode;
 use revm::context::{CfgEnv, TxEnv};
 use revm::context::evm::Evm as Env;
-use revm::interpreter::{InstructionResult as ExecutionResult, SuccessOrHalt as HaltReason};
+use revm::interpreter::InstructionResult as ExecutionResult;
 use revm::context_interface::TransactTo;
 use alloy::{providers::ProviderBuilder, transports::http::reqwest::Url};
 use cache::DefaultProviderCache;
@@ -130,15 +132,15 @@ impl TinyEVM {
     }
 
     pub fn tx_mut(&mut self) -> &mut TxEnv {
-        self.exe_mut().tx_mut()
+        self.exe.as_mut().unwrap().tx_mut()
     }
 
     fn db(&self) -> &ForkDB<DefaultProviderCache> {
-        &self.exe.as_ref().unwrap().context.evm.db
+        self.exe.as_ref().unwrap().db()
     }
 
     fn db_mut(&mut self) -> &mut ForkDB<DefaultProviderCache> {
-        &mut self.exe.as_mut().unwrap().context.evm.db
+        self.exe.as_mut().unwrap().db_mut()
     }
 
     pub fn instrument_config_mut(&mut self) -> &mut InstrumentConfig {
@@ -148,8 +150,7 @@ impl TinyEVM {
         self.exe
             .as_ref()
             .unwrap()
-            .context
-            .external
+            .ctx
             .log_inspector
             .as_ref()
             .unwrap()
@@ -159,8 +160,7 @@ impl TinyEVM {
         self.exe
             .as_mut()
             .unwrap()
-            .context
-            .external
+            .ctx
             .log_inspector
             .as_mut()
             .unwrap()
@@ -170,8 +170,7 @@ impl TinyEVM {
         self.exe
             .as_ref()
             .unwrap()
-            .context
-            .external
+            .ctx
             .bug_inspector
             .as_ref()
             .unwrap()
@@ -181,8 +180,7 @@ impl TinyEVM {
         self.exe
             .as_mut()
             .unwrap()
-            .context
-            .external
+            .ctx
             .bug_inspector
             .as_mut()
             .unwrap()
@@ -211,7 +209,7 @@ impl TinyEVM {
 
     /// Set account balance, if the account does not exist, will create one
     pub fn set_account_balance(&mut self, address: Address, balance: U256) -> Result<()> {
-        let db = &mut self.exe.as_mut().unwrap().context.evm.db;
+        let db = self.exe.as_mut().unwrap().db_mut();
         if let Some(account) = db.accounts.get_mut(&address) {
             account.info.balance = balance;
         } else {
@@ -223,7 +221,7 @@ impl TinyEVM {
 
     /// Reset the account info
     pub fn reset_account(&mut self, addr: Address) -> Result<()> {
-        let db = &mut self.exe.as_mut().unwrap().context.evm.db;
+        let db = self.exe.as_mut().unwrap().db_mut();
 
         if db.accounts.get(&addr).is_some() {
             let account = AccountInfo {
@@ -238,7 +236,7 @@ impl TinyEVM {
 
     /// Reset an account storage keeping the account info
     pub fn reset_storage(&mut self, addr: Address) -> Result<()> {
-        let db = &mut self.exe.as_mut().unwrap().context.evm.db;
+        let db = self.exe.as_mut().unwrap().db_mut();
         db.replace_account_storage(addr, Default::default())?;
         Ok(())
     }
@@ -246,7 +244,7 @@ impl TinyEVM {
     /// Reset both the accoun info and storage by address
     pub fn nuke_account(&mut self, addr: Address) -> Result<()> {
         info!("Nuke account: {:?}", addr);
-        let db = &mut self.exe.as_mut().unwrap().context.evm.db;
+        let db = self.exe.as_mut().unwrap().db_mut();
         db.accounts.remove(&addr);
 
         let managed_addresses = &mut self.bug_inspector_mut().managed_addresses;
@@ -281,7 +279,7 @@ impl TinyEVM {
         {
             let tx = self.exe.as_mut().unwrap().tx_mut();
             tx.caller = owner;
-            tx.transact_to = TransactTo::Create;
+            tx.kind = TransactTo::Create;
             tx.data = contract_bytecode.clone().into();
             tx.value = value;
             tx.gas_limit = tx_gas_limit.unwrap_or(self.tx_gas_limit);
@@ -292,7 +290,7 @@ impl TinyEVM {
             .exe
             .as_ref()
             .unwrap()
-            .context
+            .ctx
             .evm
             .db
             .accounts
@@ -307,19 +305,13 @@ impl TinyEVM {
                 .create_address_overrides
                 .insert(address, force_address);
         }
-        let result = self.exe.as_mut().unwrap().transact_commit();
+        let result = self.exe.as_mut().unwrap().transact();
 
         trace!("deploy result: {:?}", result);
 
         let collision = {
             if let Ok(ref result) = result {
-                matches!(
-                    result,
-                    ExecutionResult::Halt {
-                        reason: HaltReason::CreateCollision,
-                        ..
-                    }
-                )
+                matches!(result, ExecutionResult::CreateCollision)
             } else {
                 false
             }
@@ -382,13 +374,13 @@ impl TinyEVM {
             let tx_gas_limit = tx_gas_limit.unwrap_or(self.tx_gas_limit);
             let tx = self.tx_mut();
             tx.caller = sender;
-            tx.transact_to = TransactTo::Call(contract);
+            tx.kind = TransactTo::Call(contract);
             tx.data = data.into();
             tx.value = value;
             tx.gas_limit = tx_gas_limit;
         }
 
-        let result = self.exe_mut().transact_commit();
+        let result = self.exe_mut().transact();
 
         let addresses = self.created_addresses().clone();
         info!(
@@ -491,7 +483,7 @@ impl TinyEVM {
         let accounts = &db.accounts;
         let account = accounts
             .get(&addr)
-            .context(format!("Failed to get account for address: {:?}", addr))?;
+            .ctx(format!("Failed to get account for address: {:?}", addr))?;
         account
             .storage
             .get(&index)
@@ -512,7 +504,7 @@ impl TinyEVM {
 
     /// Clone account from one address to another. If `delete` is true, the original account will be deleted.
     pub fn clone_account(&mut self, from: Address, to: Address, delete: bool) -> Result<()> {
-        let db = &mut self.exe.as_mut().unwrap().context.evm.db;
+        let db = self.exe.as_mut().unwrap().db_mut();
         let accounts = &db.accounts;
         let account = accounts.get(&from).cloned();
 
@@ -597,7 +589,6 @@ impl TinyEVM {
         };
 
         let exe = Evm::builder()
-            .modify_env(|e| *e = Box::new(env.clone()))
             .with_db(db.clone())
             .with_external_context(inspector)
             .build();
@@ -632,7 +623,7 @@ impl TinyEVM {
 
     /// Get addresses loaded remotely as string
     pub fn get_forked_addresses(&self) -> Result<Vec<String>> {
-        let db = &self.exe.as_ref().unwrap().context.evm.db;
+        let db = self.exe.as_ref().unwrap().db();
         let addresses = &db.remote_addresses;
         addresses.keys().map(|a| Ok(format!("0x{:x}", a))).collect()
     }
@@ -640,7 +631,7 @@ impl TinyEVM {
     /// Get remotely loaded slot indices by address
     pub fn get_forked_slots(&self, address: String) -> Result<Vec<BigInt>> {
         let address = Address::from_str(&address)?;
-        let db = &self.exe.as_ref().unwrap().context.evm.db;
+        let db = self.exe.as_ref().unwrap().db();
         db.remote_addresses.get(&address).map_or_else(
             || Ok(vec![]),
             |slots| Ok(slots.iter().map(ruint_u256_to_bigint).collect::<Vec<_>>()),
@@ -649,7 +640,7 @@ impl TinyEVM {
 
     /// Toggle for enable mode, only makes sense when fork_url is set
     pub fn toggle_enable_fork(&mut self, enabled: bool) {
-        let db = &mut self.exe.as_mut().unwrap().context.evm.db;
+        let db = self.exe.as_mut().unwrap().db_mut();
         db.fork_enabled = enabled;
     }
 
@@ -661,7 +652,7 @@ impl TinyEVM {
 
     /// Get the current fork toggle status
     pub fn is_fork_enabled(&self) -> bool {
-        let db = &self.exe.as_ref().unwrap().context.evm.db;
+        let db = self.exe.as_ref().unwrap().db();
         db.fork_enabled
     }
 
@@ -832,14 +823,14 @@ impl TinyEVM {
         self.owner = Address::ZERO;
         // TODO reset db and env
 
-        // let fork_enabled = self.exe.context.evm.db.fork_enabled;
+        // let fork_enabled = self.exe.ctx.evm.db.fork_enabled;
         // TODO clear all data
         // let mut exe = revm::make_executor_with_fork(
         //     Some(self.owner.into()),
         //     self.fork_url.clone(),
         //     self.block_id,
         // )?;
-        // self.exe.context.evm.db.fork_enabled = fork_enabled;
+        // self.exe.ctx.evm.db.fork_enabled = fork_enabled;
         // self.exe = exe;
         Ok(())
     }
@@ -964,25 +955,32 @@ impl TinyEVM {
         let to_u256 = |v: &str| U256::from_str_radix(v, 16);
         let to_address = |v: &str| Address::from_str(v);
 
-        macro_rules! set_env_field {
-            ($field:ident, $value:expr, $env:ident, $method:ident) => {{
-                let env = &mut self.exe.as_mut().unwrap().$env();
+        macro_rules! set_tx_field {
+            ($field:ident, $value:expr, $method:ident) => {{
+                let env = self.exe.as_mut().unwrap().tx_mut();
+                env.$field = $method($value)?;
+            }};
+        }
+        
+        macro_rules! set_block_field {
+            ($field:ident, $value:expr, $method:ident) => {{
+                let env = self.exe.as_mut().unwrap().cfg_mut().env.block;
                 env.$field = $method($value)?;
             }};
         }
         match field {
             CHAIN_ID => {
-                let cfg = &mut self.exe.as_mut().unwrap().cfg_mut();
+                let cfg = self.exe.as_mut().unwrap().cfg_mut();
                 cfg.chain_id = u64::from_str_radix(value, 16)?;
             }
-            GAS_PRICE => set_env_field!(gas_price, value, tx_mut, to_u256),
-            ORIGIN => set_env_field!(caller, value, tx_mut, to_address),
-            BLOCK_NUMBER => set_env_field!(number, value, block_mut, to_u256),
-            BLOCK_TIMESTAMP => set_env_field!(timestamp, value, block_mut, to_u256),
-            BLOCK_DIFFICULTY => set_env_field!(difficulty, value, block_mut, to_u256),
-            BLOCK_GAS_LIMIT => set_env_field!(gas_limit, value, block_mut, to_u256),
-            BLOCK_BASE_FEE_PER_GAS => set_env_field!(basefee, value, block_mut, to_u256),
-            BLOCK_COINBASE => set_env_field!(coinbase, value, block_mut, to_address),
+            GAS_PRICE => set_tx_field!(gas_price, value, to_u256),
+            ORIGIN => set_tx_field!(caller, value, to_address),
+            BLOCK_NUMBER => set_block_field!(number, value, to_u256),
+            BLOCK_TIMESTAMP => set_block_field!(timestamp, value, to_u256),
+            BLOCK_DIFFICULTY => set_block_field!(difficulty, value, to_u256),
+            BLOCK_GAS_LIMIT => set_block_field!(gas_limit, value, to_u256),
+            BLOCK_BASE_FEE_PER_GAS => set_block_field!(basefee, value, to_u256),
+            BLOCK_COINBASE => set_block_field!(coinbase, value, to_address),
             _ => return Err(eyre!("Unknown field: {}", &field))?,
         }
 
@@ -1071,7 +1069,7 @@ impl TinyEVM {
         addr: String, // address as H160, encoded as hex
     ) -> Result<()> {
         let addr = Address::from_str(&addr)?;
-        let db = &mut self.exe.as_mut().unwrap().context.evm.db;
+        let db = self.exe.as_mut().unwrap().db_mut();
         db.accounts.remove(&addr);
         Ok(())
     }
@@ -1095,12 +1093,12 @@ impl TinyEVM {
         let from = Address::from_str(&from)?;
         let to = Address::from_str(&to)?;
 
-        let db = &mut self.exe.as_mut().unwrap().context.evm.db;
+        let db = self.exe.as_mut().unwrap().db_mut();
 
         let account = self
             .snapshots
             .get(&from)
-            .context("No snapshot found")?
+            .ctx("No snapshot found")?
             .clone();
         db.accounts.insert(to, account);
         Ok(())
@@ -1122,7 +1120,7 @@ impl TinyEVM {
         let account = {
             self.snapshots
                 .get(&addr)
-                .context("No snapshot found")?
+                .ctx("No snapshot found")?
                 .clone()
         };
         self.db_mut().accounts.insert(addr, account);
@@ -1146,13 +1144,13 @@ impl TinyEVM {
         let id = Uuid::parse_str(&snapshot_id)?;
 
         if keep_snapshot {
-            let snapshot = self.global_snapshot.get(&id).context("No snapshot found")?;
+            let snapshot = self.global_snapshot.get(&id).ctx("No snapshot found")?;
             *self.db_mut() = snapshot.clone();
         } else {
             let snapshot = self
                 .global_snapshot
                 .remove(&id)
-                .context("No snapshot found")?;
+                .ctx("No snapshot found")?;
             let _ = replace(self.db_mut(), snapshot);
         }
 

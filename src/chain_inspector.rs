@@ -1,6 +1,6 @@
 use revm::interpreter::{CallInputs, CallOutcome, CreateInputs, CreateOutcome};
 use revm::primitives::Log;
-use revm::{Database, context::Context as EvmContext, Inspector, interpreter::Interpreter};
+use revm::{Database, Inspector, interpreter::Interpreter};
 
 use crate::instrument::bug_inspector::BugInspector;
 use crate::instrument::log_inspector::LogInspector;
@@ -63,32 +63,30 @@ impl<DB: Database> Inspector<DB> for ChainInspector {
     #[inline]
     fn call_end(
         &mut self,
-        context: &mut EvmContext<DB>,
+        db: &mut DB,
         inputs: &CallInputs,
-        outcome: CallOutcome,
-    ) -> CallOutcome {
-        let mut outcome = outcome;
+        outcome: &mut CallOutcome,
+    ) {
         if let Some(ins) = self.log_inspector.as_mut() {
-            outcome = ins.call_end(context, inputs, outcome);
+            ins.call_end(db, inputs, outcome);
         }
         if let Some(ins) = self.bug_inspector.as_mut() {
-            outcome = ins.call_end(context, inputs, outcome);
+            ins.call_end(db, inputs, outcome);
         }
-        outcome
     }
 
     /// Call the inspectors in order, if any of them returns a `Some`, return that value.
     #[inline]
     fn create(
         &mut self,
-        context: &mut EvmContext<DB>,
+        db: &mut DB,
         inputs: &mut CreateInputs,
     ) -> Option<CreateOutcome> {
         if let Some(ins) = self.log_inspector.as_mut() {
-            ins.create(context, inputs);
+            ins.create(db, inputs);
         }
         if let Some(ins) = self.bug_inspector.as_mut() {
-            ins.create(context, inputs)
+            ins.create(db, inputs)
         } else {
             None
         }
@@ -97,17 +95,15 @@ impl<DB: Database> Inspector<DB> for ChainInspector {
     #[inline]
     fn create_end(
         &mut self,
-        context: &mut EvmContext<DB>,
+        db: &mut DB,
         inputs: &CreateInputs,
-        outcome: CreateOutcome,
-    ) -> CreateOutcome {
-        let mut outcome = outcome;
+        outcome: &mut CreateOutcome,
+    ) {
         if let Some(ins) = self.log_inspector.as_mut() {
-            outcome = ins.create_end(context, inputs, outcome);
+            ins.create_end(db, inputs, outcome);
         }
         if let Some(ins) = self.bug_inspector.as_mut() {
-            outcome = ins.create_end(context, inputs, outcome);
+            ins.create_end(db, inputs, outcome);
         }
-        outcome
     }
 }

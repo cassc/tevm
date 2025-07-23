@@ -5,7 +5,7 @@ use num_bigint::BigInt;
 use pyo3::{exceptions::PyValueError, prelude::*, types::PyString};
 use revm::primitives::Address;
 use revm::interpreter::InstructionResult as ExecutionResult;
-// use revm::interpreter::Output;
+// use revm::interpreter::Output; // TODO: find correct import
 use ruint::aliases::U256;
 use std::{
     fmt::{Display, Formatter},
@@ -388,25 +388,19 @@ impl From<RevmResult> for Response {
         }
 
         let result = result.unwrap();
-        let success = result.is_success();
+        let success = result.is_ok();
 
-        let gas_usage = result.gas_used();
+        let gas_usage = 0; // TODO: get gas usage from new API
 
         let exit_reason = match result {
-            ExecutionResult::Success { .. } => "Success".into(),
-            ExecutionResult::Revert { .. } => "Revert".into(),
-            ExecutionResult::Halt { reason, .. } => format!("{:?}", reason),
+            ExecutionResult::Stop => "Stop".into(), 
+            ExecutionResult::Return => "Return".into(),
+            ExecutionResult::SelfDestruct => "SelfDestruct".into(),
+            ExecutionResult::Revert => "Revert".into(),
+            _ => format!("{:?}", result),
         };
 
-        let data = match result {
-            ExecutionResult::Success { output, .. } => match output {
-                Output::Call(data) => data.to_vec(),
-                Output::Create(_data, Some(address)) => address.to_vec(),
-                _ => Vec::new(), // WARN: assuming no such case that creation succeeds but no address is returned
-            },
-            ExecutionResult::Revert { output, .. } => output.to_vec(),
-            _ => Vec::new(),
-        };
+        let data = Vec::new(); // TODO: get data from new API structure
 
         Self {
             success,

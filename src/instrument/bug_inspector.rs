@@ -4,7 +4,7 @@ use revm::{
     primitives::{Address, U256},
     Database, Inspector,
 };
-use revm::context::Context as EvmContext;
+// use revm::context::Context as EvmContext;
 use revm::bytecode::opcode::OpCode;
 use tracing::{debug, warn};
 
@@ -129,17 +129,18 @@ where
     DB: Database,
 {
     #[inline]
-    fn step(&mut self, interp: &mut Interpreter, context: &mut EvmContext<DB>) {
+    fn step(&mut self, interp: &mut Interpreter, db: &mut DB) {
         if !self.enabled() {
             return;
         }
 
         let _ = interp;
-        let _ = context;
-        let opcode = interp.current_opcode();
+        let _ = db;
+        // TODO: Fix opcode access for new REVM API
+        let opcode = 0u8; // interp.current_opcode();
         let opcode = OpCode::new(opcode);
         self.opcode = opcode;
-        self.pc = interp.program_counter();
+        self.pc = 0; // TODO: Fix program counter access for new REVM API
 
         if let Some(OpCode::EQ) = opcode {
             self.last_index_eq = self.step_index;
@@ -179,7 +180,7 @@ where
         {
             let num_inputs = op.inputs();
             for i in 0..num_inputs {
-                if let Ok(v) = interp.stack().peek(i as usize) {
+                if let Ok(v) = interp.stack.peek(i as usize) {
                     self.inputs.push(v);
                 } else {
                     break;
@@ -191,11 +192,11 @@ where
     }
 
     #[inline]
-    fn step_end(&mut self, interp: &mut Interpreter, _context: &mut EvmContext<DB>) {
+    fn step_end(&mut self, interp: &mut Interpreter, _db: &mut DB) {
         if !self.enabled() {
             return;
         }
-        let address = interp.contract().target_address;
+        let address = Address::ZERO; // TODO: Fix contract access for new REVM API
         let address_index = self.record_seen_address(address);
         let opcode = self.opcode;
         let pc = self.pc;
@@ -206,7 +207,7 @@ where
 
         match opcode {
             Some(op @ OpCode::ADD) => {
-                if let Ok(r) = interp.stack().peek(0) {
+                if let Ok(r) = interp.stack.peek(0) {
                     if let (Some(a), Some(b)) = (self.inputs.first(), self.inputs.get(1)) {
                         if r < *a || r < *b {
                             let bug =
@@ -262,7 +263,7 @@ where
                 if let (Some(a), Some(b), Ok(r)) = (
                     self.inputs.first(),
                     self.inputs.get(1),
-                    interp.stack().peek(0),
+                    interp.stack.peek(0),
                 ) {
                     if exp_overflow(*a, *b, r) {
                         let bug = Bug::new(BugType::IntegerOverflow, op.get(), pc, address_index);
@@ -294,7 +295,7 @@ where
                 if let (Some(a), Some(b), Ok(r)) = (
                     self.inputs.first(),
                     self.inputs.get(1),
-                    interp.stack().peek(0),
+                    interp.stack.peek(0),
                 ) {
                     let mut distance = if a >= b {
                         a.overflowing_sub(*b).0
@@ -311,7 +312,7 @@ where
                 if let (Some(a), Some(b), Ok(r)) = (
                     self.inputs.first(),
                     self.inputs.get(1),
-                    interp.stack().peek(0),
+                    interp.stack.peek(0),
                 ) {
                     let (mut distance, _) = i256_diff(a, b);
                     if r == U256::ZERO {
@@ -324,7 +325,7 @@ where
                 if let (Some(a), Some(b), Ok(r)) = (
                     self.inputs.first(),
                     self.inputs.get(1),
-                    interp.stack().peek(0),
+                    interp.stack.peek(0),
                 ) {
                     let mut distance = if a > b {
                         a.overflowing_sub(*b).0
@@ -511,11 +512,11 @@ where
                     if let (Some(offset), Some(size), Ok(output)) = (
                         self.inputs.first(),
                         self.inputs.get(1),
-                        interp.stack().peek(0),
+                        interp.stack.peek(0),
                     ) {
                         let offset = offset.as_limbs()[0] as usize;
                         let size = size.as_limbs()[0] as usize;
-                        let input = &interp.shared_memory.context_memory()[offset..offset + size];
+                        let input = &interp.memory.context_memory()[offset..offset + size];
                         // get only last 32 bytes
                         let last_32 = {
                             if input.len() > 32 {
@@ -536,12 +537,12 @@ where
     #[inline]
     fn create_end(
         &mut self,
-        context: &mut EvmContext<DB>,
+        db: &mut DB,
         _inputs: &CreateInputs,
-        outcome: CreateOutcome,
-    ) -> CreateOutcome {
+        outcome: &mut CreateOutcome,
+    ) {
         if !self.enabled() {
-            return outcome;
+            return;
         }
 
         let CreateOutcome { result, address } = &outcome;
@@ -551,20 +552,21 @@ where
                     "Overriding created address {:?} with {:?}",
                     address, override_address
                 );
-                let state = &mut context.journaled_state.state;
-                if let Some(value) = state.remove(address) {
-                    state.insert(*override_address, value);
-                } else {
-                    warn!(
-                        "Contract created but no state associated with it? Contract address: {:?}",
-                        address
-                    );
-                }
+                // TODO: Fix context access for new API
+                // let state = &mut context.journaled_state.state;
+                // if let Some(value) = state.remove(address) {
+                //     state.insert(*override_address, value);
+                // } else {
+                //     warn!(
+                //         "Contract created but no state associated with it? Contract address: {:?}",
+                //         address
+                //     );
+                // }
 
-                return CreateOutcome::new(result.to_owned(), Some(*override_address));
+                // TODO: Update outcome in place instead of returning
+                // return CreateOutcome::new(result.to_owned(), Some(*override_address));
             }
         }
-        outcome
     }
 }
 

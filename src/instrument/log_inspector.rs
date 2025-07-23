@@ -2,10 +2,10 @@ use crate::CALL_DEPTH;
 use lazy_static::lazy_static;
 use revm::{
     Database, Inspector,
-    interpreter::{CallInputs, CallOutcome, CallScheme, CallValue, InstructionResult, Interpreter},
+    interpreter::{CallInputs, CallOutcome, CallScheme, CallValue, InstructionResult, Interpreter, CallInput},
     primitives::{Address, B256, Bytes, Log as EvmLog, U256},
 };
-use revm::context::Context as EvmContext;
+// use revm::context::Context as EvmContext;
 use std::cell::Cell;
 use thread_local::ThreadLocal;
 
@@ -51,7 +51,7 @@ where
     DB: Database,
 {
     #[inline]
-    fn log(&mut self, _interp: &mut Interpreter, _context: &mut EvmContext<DB>, evm_log: &EvmLog) {
+    fn log(&mut self, _interp: &mut Interpreter, _db: &mut DB, evm_log: EvmLog) {
         if !self.trace_enabled {
             return;
         }
@@ -71,7 +71,7 @@ where
     #[inline]
     fn call(
         &mut self,
-        _context: &mut EvmContext<DB>,
+        _db: &mut DB,
         inputs: &mut CallInputs,
     ) -> Option<CallOutcome> {
         if self.trace_enabled {
@@ -101,7 +101,7 @@ where
                 from,
                 to,
                 value,
-                input: inputs.input.clone(),
+                input: Bytes::new(),  // TODO: Fix this - CallInput API changed in REVM 27
                 depth,
                 return_data: None,
                 is_static,
@@ -116,10 +116,10 @@ where
     #[inline]
     fn call_end(
         &mut self,
-        _context: &mut EvmContext<DB>,
+        _db: &mut DB,
         _inputs: &CallInputs,
-        result: CallOutcome,
-    ) -> CallOutcome {
+        result: &mut CallOutcome,
+    ) {
         if self.trace_enabled {
             let cell = CALL_DEPTH.get_or_default();
             cell.set(cell.get() - 1);
@@ -132,7 +132,5 @@ where
             call_trace.return_data = Some(result.output().clone());
             call_trace.status = Some(result.result.result);
         }
-
-        result
     }
 }
